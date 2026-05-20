@@ -21,7 +21,7 @@ from System import Type, AppDomain, Void
 from System.Reflection import BindingFlags
 
 
-def get_all_classes(root, prefix="") -> list:
+def get_all_classes(root, prefix=""):
     classes = []
     for name in dir(root):
         if name.startswith("__"):
