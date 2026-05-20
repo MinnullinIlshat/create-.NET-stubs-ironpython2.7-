@@ -21,6 +21,29 @@ from System import Type, AppDomain, Void
 from System.Reflection import BindingFlags
 
 
+def get_all_classes(root, prefix="") -> list:
+    classes = []
+    for name in dir(root):
+        if name.startswith("__"):
+            continue
+        full = "%s.%s" % (prefix, name) if prefix else name
+
+        try:
+            obj = getattr(root, name)
+            obj_str = str(type(obj)).lower()
+
+            if any(sub in obj_str for sub in ("module", "namespace", "cls")):
+                classes.extend(get_all_classes(obj, full))
+                continue
+
+            if isinstance(obj, type) or hasattr(obj, "GetType") or "class" in obj_str:
+                classes.append(full)
+        except:
+            pass
+
+    return classes
+
+
 # ===================================================================
 # Маппинг .NET типов → Python типы (расширяемо)
 # ===================================================================
@@ -40,8 +63,9 @@ NET_TO_PY = {
     "System.Decimal": "float",
     "System.Object": "object",
     "System.Void": "None",
+    "System.Char": "str",
     # Можно расширять:
-    # "System.DateTime": "datetime.datetime",
+    # "System.DateTime": "datetime",
     # "System.Guid": "str",
 }
 
@@ -50,8 +74,9 @@ def clean_name(name):
     """Очищает имя от & и других недопустимых символов."""
     if not name:
         return ""
-    if "&" in name:
-        name = name.split("&", 1)[0]
+    for s in "&`[":
+        if s in name:
+            name = name.split(s, 1)[0]
     return name.strip()
 
 
@@ -73,7 +98,13 @@ def find_type(full_name):
                 return t
         except:
             pass
-    return None
+
+    try:
+        path, name = full_name.rsplit(".", 1)
+        exec("from %s import %s" % (path, name))
+        return eval("clr.GetClrType(%s)" % name)
+    except:
+        return None
 
 
 def type_to_annotation(net_type, imports):
@@ -117,7 +148,7 @@ def type_to_annotation(net_type, imports):
     if full_name in NET_TO_PY:
         py_type = NET_TO_PY[full_name]
         # Специальные импорты (например datetime)
-        if full_name == "System.DateTime":
+        if py_type == "datetime":
             imports.add(("datetime", "datetime"))
         return py_type
 
@@ -167,7 +198,9 @@ def generate_class_stub(t, imports):
 
     # Методы (исключаем get_/set_ и специальные)
     seen = set()
-    for m in t.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static):
+    for m in t.GetMethods(
+        BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static
+    ):
         if m.IsSpecialName or m.Name.startswith(("get_", "set_")):
             continue
         if m.Name in seen:
@@ -191,7 +224,9 @@ def generate_class_stub(t, imports):
         body.append("        ...")
 
     # Свойства
-    for p in t.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static):
+    for p in t.GetProperties(
+        BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static
+    ):
         p_name = p.Name
         if not p_name or p_name.startswith("Item"):
             continue
@@ -230,6 +265,9 @@ def generate_stub(type_input):
     imports = set()
 
     full_path = t.FullName or str(t)
+    for s in "`[":
+        if s in full_path:
+            full_path = full_path.split(s, 1)[0]
     class_name = clean_name(t.Name)
 
     lines = ["# " + full_path]
@@ -268,18 +306,5 @@ def generate_stubs(fullname_list):
     return all_lines
 
 
-# ===================================================================
-# Пример использования (раскомментируйте при необходимости)
-# ===================================================================
-# if __name__ == "__main__":
-#     # Загрузите нужные сборки перед использованием:
-#     # clr.AddReference("System.Collections")
-#
-#     paths = []
-#     code_lines = generate_stubs(paths)
-#
-#     # Запись в .pyi файл
-#     with open("stubs.pyi", "w", encoding="utf-8") as f:
-#         f.write("\n".join(code_lines))
-#
-#     print("Стабы сгенерированы ({} строк)".format(len(code_lines)))
+names = []
+generate_stubs(names)
