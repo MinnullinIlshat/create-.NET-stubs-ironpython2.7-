@@ -6,30 +6,33 @@ using System.Collections.Generic;
 
 public class StubGenerator
 {
-    // ←←← НАСТРОЙКА: укажи нужные namespace'ы здесь (очень важно!)
+    // ←←← ИЗМЕНИ ЭТО под свои нужды
     private static readonly HashSet<string> ImportantNamespaces = new HashSet<string>
     {
-        "YourCompany",      // ← замени на реальные
-        "YourProject.Core",
-        "Scripts",          // для общих скриптов
-        // Добавь все важные пространства имён
+        "YourCompany",     // ← замени на реальные пространства имён
+        "YourProject",
+        "Scripts.Common",
+        // Добавляй сюда нужные namespace'ы
     };
 
-    public static void GenerateAndPrintStubs()
+    public static string[] GenerateStubs()
     {
-        var sb = new StringBuilder();
-        sb.AppendLine("// === СТАБЫ СГЕНЕРИРОВАНЫ " + DateTime.Now + " ===");
-        sb.AppendLine("// Скопируй этот вывод в VS Code");
-        sb.AppendLine();
+        var lines = new List<string>();
+
+        lines.Add("// === СТАБЫ СГЕНЕРИРОВАНЫ " + DateTime.Now + " ===");
+        lines.Add("// Скопируй этот массив в VS Code");
+        lines.Add("");
 
         var assemblies = AppDomain.CurrentDomain.GetAssemblies()
-            .Where(a => !a.IsDynamic && !a.FullName.StartsWith("System.") &&
-                        !a.FullName.StartsWith("Microsoft.") &&
-                        !a.FullName.StartsWith("mscorlib"));
+            .Where(a => !a.IsDynamic 
+                     && !a.FullName.StartsWith("System.", StringComparison.OrdinalIgnoreCase)
+                     && !a.FullName.StartsWith("Microsoft.", StringComparison.OrdinalIgnoreCase)
+                     && !a.FullName.StartsWith("mscorlib", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(a => a.FullName);
 
-        foreach (var asm in assemblies.OrderBy(a => a.FullName))
+        foreach (var asm in assemblies)
         {
-            sb.AppendLine($"// === СБОРКА: {asm.FullName} ===");
+            lines.Add($"// === СБОРКА: {asm.FullName} ===");
 
             var types = asm.GetTypes()
                 .Where(t => t.IsPublic)
@@ -38,26 +41,26 @@ public class StubGenerator
             foreach (var type in types)
             {
                 // Фильтрация по namespace
-                if (ImportantNamespaces.Count > 0 &&
-                    !ImportantNamespaces.Any(ns =>
+                if (ImportantNamespaces.Count > 0 && 
+                    !ImportantNamespaces.Any(ns => 
                         type.Namespace?.StartsWith(ns, StringComparison.OrdinalIgnoreCase) == true))
                     continue;
 
                 try
                 {
                     string typeCode = GenerateTypeStub(type);
-                    sb.AppendLine(typeCode);
-                    sb.AppendLine();
+                    lines.AddRange(typeCode.Split(new[] { Environment.NewLine }, StringSplitOptions.None));
+                    lines.Add(""); // пустая строка между типами
                 }
                 catch (Exception ex)
                 {
-                    sb.AppendLine($"// Ошибка при генерации {type.FullName}: {ex.Message}");
+                    lines.Add($"// Ошибка при генерации {type.FullName}: {ex.Message}");
                 }
             }
         }
 
-        Console.WriteLine(sb.ToString());
-        Console.WriteLine("// === КОНЕЦ ГЕНЕРАЦИИ ===");
+        lines.Add("// === КОНЕЦ ГЕНЕРАЦИИ ===");
+        return lines.ToArray();
     }
 
     private static string GenerateTypeStub(Type type)
@@ -79,7 +82,7 @@ public class StubGenerator
 
         sb.Append($"{modifiers}{kind} {GetTypeShortName(type)}");
 
-        // Наследование и интерфейсы
+        // Базовый класс + интерфейсы
         var bases = new List<string>();
         if (type.BaseType != null && type.BaseType != typeof(object))
             bases.Add(GetTypeShortName(type.BaseType));
@@ -94,31 +97,26 @@ public class StubGenerator
         sb.AppendLine("{");
 
         // Методы
-        var methods = type.GetMethods(BindingFlags.Public | BindingFlags.Instance |
-                                     BindingFlags.Static | BindingFlags.DeclaredOnly);
-        foreach (var m in methods)
+        var methods = type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly);
+        foreach (var m in methods.Where(m => !m.IsSpecialName))
         {
-            if (m.IsSpecialName) continue; // пропускаем get_/set_
-
             string returnType = GetTypeShortName(m.ReturnType);
             var parameters = m.GetParameters()
-                .Select(p => $"{GetTypeShortName(p.ParameterType)} {p.Name}")
-                .ToList();
+                .Select(p => $"{GetTypeShortName(p.ParameterType)} {p.Name}");
 
             string staticMod = m.IsStatic ? "static " : "";
             sb.AppendLine($"    public {staticMod}{returnType} {m.Name}({string.Join(", ", parameters)})");
             sb.AppendLine("    {");
             sb.AppendLine("        throw new System.NotImplementedException();");
             sb.AppendLine("    }");
-            sb.AppendLine();
         }
 
         // Свойства
-        foreach (var p in type.GetProperties(BindingFlags.Public | BindingFlags.Instance |
-                                             BindingFlags.Static | BindingFlags.DeclaredOnly))
+        var properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly);
+        foreach (var p in properties)
         {
             string propType = GetTypeShortName(p.PropertyType);
-            string staticMod = p.GetGetMethod()?.IsStatic == true ? "static " : "";
+            string staticMod = (p.GetGetMethod()?.IsStatic == true) ? "static " : "";
             sb.AppendLine($"    public {staticMod}{propType} {p.Name} {{ get; set; }}");
         }
 
@@ -134,12 +132,13 @@ public class StubGenerator
             return $"{type.Name.Split('`')[0]}<{args}>";
         }
 
-        // Простые типы
         if (type == typeof(int)) return "int";
         if (type == typeof(string)) return "string";
         if (type == typeof(bool)) return "bool";
         if (type == typeof(void)) return "void";
         if (type == typeof(object)) return "object";
+        if (type == typeof(decimal)) return "decimal";
+        if (type == typeof(DateTime)) return "DateTime";
 
         return type.Name;
     }
