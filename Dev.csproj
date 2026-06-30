@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>   <!-- или net6.0 / net9.0 - подбери под свою среду -->
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Это только для разработки, не нужно коммитить в прод -->
+    <OutputType>Library</OutputType>
+  </PropertyGroup>
+
+  <!-- Все твои реальные .cs файлы -->
+  <ItemGroup>
+    <Compile Include="**/*.cs" Exclude="Stubs/**" />   <!-- твои скрипты -->
+  </ItemGroup>
+
+  <!-- Стабы -->
+  <ItemGroup>
+    <Compile Include="Stubs/**/*.cs" />
+  </ItemGroup>
+
+</Project>
