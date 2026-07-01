@@ -6,19 +6,15 @@ using System.Text;
 
 public static class StubGenerator
 {
-    // === НАСТРОЙКА: какие namespace'ы нам нужны ===
     private static readonly HashSet<string> TargetNamespaces = new HashSet<string>
     {
-        "ТвойNamespace",           // ← замени на свои
-        "ДругойNamespace",
-        // Добавь все нужные
+        "Avanpost"
     };
 
     public static string[] GenerateStubs()
     {
         var result = new List<string>();
         result.Add("// === СТАБЫ СГЕНЕРИРОВАНЫ АВТОМАТИЧЕСКИ ===");
-        result.Add("// Файлы будут распределены по папкам Stubs/<Namespace>/");
         result.Add("");
 
         var assemblies = AppDomain.CurrentDomain.GetAssemblies()
@@ -29,12 +25,9 @@ public static class StubGenerator
 
         foreach (var asm in assemblies.OrderBy(a => a.FullName))
         {
-            foreach (var type in asm.GetTypes()
-                .Where(t => t.IsPublic)
-                .OrderBy(t => t.FullName))
+            foreach (var type in asm.GetTypes().Where(t => t.IsPublic).OrderBy(t => t.FullName))
             {
-                if (!ShouldIncludeType(type)) 
-                    continue;
+                if (!ShouldInclude(type)) continue;
 
                 try
                 {
@@ -44,7 +37,7 @@ public static class StubGenerator
                 }
                 catch (Exception ex)
                 {
-                    result.Add($"// ОШИБКА: {type.FullName} - {ex.Message}");
+                    result.Add($"// ОШИБКА: {type.FullName} → {ex.Message}");
                 }
             }
         }
@@ -52,18 +45,18 @@ public static class StubGenerator
         return result.ToArray();
     }
 
-    private static bool ShouldIncludeType(Type type)
+    private static bool ShouldInclude(Type type)
     {
         if (TargetNamespaces.Count == 0) return true;
-        return TargetNamespaces.Any(ns => 
-            type.Namespace?.StartsWith(ns, StringComparison.OrdinalIgnoreCase) == true);
+        return type.Namespace != null &&
+               TargetNamespaces.Any(ns => type.Namespace.StartsWith(ns, StringComparison.OrdinalIgnoreCase));
     }
 
     private static string GenerateTypeStub(Type type)
     {
         var sb = new StringBuilder();
 
-        // === Добавляем using'и ===
+        // Using'и
         sb.AppendLine("using System;");
         sb.AppendLine("using System.Collections.Generic;");
         sb.AppendLine("using System.Linq;");
@@ -72,21 +65,20 @@ public static class StubGenerator
         sb.AppendLine();
 
         // Namespace
-        if (!string.IsNullOrEmpty(type.Namespace))
+        if (!string.IsNullOrWhiteSpace(type.Namespace))
             sb.AppendLine($"namespace {type.Namespace};");
         else
-            sb.AppendLine("namespace Stubs;");
+            sb.AppendLine("namespace Stubs.Generated;");
 
         sb.AppendLine();
 
         // Заголовок типа
-        string modifiers = GetTypeModifiers(type);
-        string kind = GetTypeKind(type);
-        string typeName = GetTypeName(type);
+        string modifiers = GetModifiers(type);
+        string kind = GetKind(type);
+        string name = GetCleanTypeName(type);
 
-        sb.Append($"{modifiers}{kind} {typeName}");
+        sb.Append($"{modifiers}{kind} {name}");
 
-        // Базовый класс + интерфейсы
         var inheritance = GetInheritance(type);
         if (inheritance.Count > 0)
             sb.Append($" : {string.Join(", ", inheritance)}");
@@ -94,24 +86,21 @@ public static class StubGenerator
         sb.AppendLine();
         sb.AppendLine("{");
 
-        // === Генерация членов ===
         GenerateMembers(type, sb);
 
         sb.AppendLine("}");
         return sb.ToString();
     }
 
-    private static string GetTypeModifiers(Type type)
+    private static string GetModifiers(Type type)
     {
         var mods = new List<string> { "public" };
-
         if (type.IsAbstract && !type.IsInterface) mods.Add("abstract");
         if (type.IsSealed && !type.IsEnum) mods.Add("sealed");
-
         return string.Join(" ", mods) + " ";
     }
 
-    private static string GetTypeKind(Type type)
+    private static string GetKind(Type type)
     {
         if (type.IsInterface) return "interface";
         if (type.IsEnum) return "enum";
@@ -119,27 +108,40 @@ public static class StubGenerator
         return "class";
     }
 
-    private static string GetTypeName(Type type)
+    // === ГЛАВНОЕ ИСПРАВЛЕНИЕ: убираем `1, `2 и т.д. ===
+    private static string GetCleanTypeName(Type type)
     {
         if (type.IsGenericType)
         {
-            var args = string.Join(", ", type.GetGenericArguments().Select(t => t.Name));
-            return $"{type.Name.Split('`')[0]}<{args}>";
+            string baseName = type.Name.Split('`')[0];
+            var args = string.Join(", ", type.GetGenericArguments().Select(GetCleanTypeName));
+            return $"{baseName}<{args}>";
         }
+
         return type.Name;
     }
 
     private static List<string> GetInheritance(Type type)
     {
-        var list = new List<string>();
+        var result = new List<string>();
 
         if (type.BaseType != null && type.BaseType != typeof(object))
-            list.Add(GetTypeName(type.BaseType));
+            result.Add(GetCleanTypeName(type.BaseType));
 
-        foreach (var iface in type.GetInterfaces())
-            list.Add(GetTypeName(iface));
+        result.AddRange(type.GetInterfaces().Select(GetCleanTypeName));
+        return result;
+    }
 
-        return list;
+    // === ИСПРАВЛЕНИЕ: void вместо Void ===
+    private static string GetCleanTypeNameForMember(Type type)
+    {
+        if (type == typeof(void))
+            return "void";
+
+        if (type == typeof(System.Void))
+            return "void";
+
+        return GetCleanTypeName(type);
     }
 
     private static void GenerateMembers(Type type, StringBuilder sb)
@@ -150,9 +152,10 @@ public static class StubGenerator
             if (method.IsSpecialName) continue;
 
             string staticMod = method.IsStatic ? "static " : "";
-            string returnType = GetTypeName(method.ReturnType);
+            string returnType = GetCleanTypeNameForMember(method.ReturnType);
+
             var parameters = method.GetParameters()
-                .Select(p => $"{GetTypeName(p.ParameterType)} {p.Name}");
+                .Select(p => $"{GetCleanTypeNameForMember(p.ParameterType)} {p.Name}");
 
             sb.AppendLine($"    public {staticMod}{returnType} {method.Name}({string.Join(", ", parameters)})");
             sb.AppendLine("    {");
@@ -165,16 +168,9 @@ public static class StubGenerator
         foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly))
         {
             string staticMod = prop.GetAccessors().Any(a => a.IsStatic) ? "static " : "";
-            string propType = GetTypeName(prop.PropertyType);
+            string propType = GetCleanTypeNameForMember(prop.PropertyType);
 
             sb.AppendLine($"    public {staticMod}{propType} {prop.Name} {{ get; set; }}");
-        }
-
-        // События (опционально)
-        foreach (var ev in type.GetEvents(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
-        {
-            string eventType = GetTypeName(ev.EventHandlerType);
-            sb.AppendLine($"    public event {eventType} {ev.Name};");
         }
     }
 }
