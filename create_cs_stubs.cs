@@ -1,145 +1,180 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Text;
-using System.Linq;
-using System.Collections.Generic;
 
-public class StubGenerator
+public static class StubGenerator
 {
-    // ←←← ИЗМЕНИ ЭТО под свои нужды
-    private static readonly HashSet<string> ImportantNamespaces = new HashSet<string>
+    // === НАСТРОЙКА: какие namespace'ы нам нужны ===
+    private static readonly HashSet<string> TargetNamespaces = new HashSet<string>
     {
-        "YourCompany",     // ← замени на реальные пространства имён
-        "YourProject",
-        "Scripts.Common",
-        // Добавляй сюда нужные namespace'ы
+        "ТвойNamespace",           // ← замени на свои
+        "ДругойNamespace",
+        // Добавь все нужные
     };
 
     public static string[] GenerateStubs()
     {
-        var lines = new List<string>();
-
-        lines.Add("// === СТАБЫ СГЕНЕРИРОВАНЫ " + DateTime.Now + " ===");
-        lines.Add("// Скопируй этот массив в VS Code");
-        lines.Add("");
+        var result = new List<string>();
+        result.Add("// === СТАБЫ СГЕНЕРИРОВАНЫ АВТОМАТИЧЕСКИ ===");
+        result.Add("// Файлы будут распределены по папкам Stubs/<Namespace>/");
+        result.Add("");
 
         var assemblies = AppDomain.CurrentDomain.GetAssemblies()
-            .Where(a => !a.IsDynamic 
-                     && !a.FullName.StartsWith("System.", StringComparison.OrdinalIgnoreCase)
-                     && !a.FullName.StartsWith("Microsoft.", StringComparison.OrdinalIgnoreCase)
-                     && !a.FullName.StartsWith("mscorlib", StringComparison.OrdinalIgnoreCase))
-            .OrderBy(a => a.FullName);
+            .Where(a => !a.IsDynamic &&
+                        !a.FullName.StartsWith("System.") &&
+                        !a.FullName.StartsWith("Microsoft.") &&
+                        !a.FullName.StartsWith("mscorlib"));
 
-        foreach (var asm in assemblies)
+        foreach (var asm in assemblies.OrderBy(a => a.FullName))
         {
-            lines.Add($"// === СБОРКА: {asm.FullName} ===");
-
-            var types = asm.GetTypes()
+            foreach (var type in asm.GetTypes()
                 .Where(t => t.IsPublic)
-                .OrderBy(t => t.FullName);
-
-            foreach (var type in types)
+                .OrderBy(t => t.FullName))
             {
-                // Фильтрация по namespace
-                if (ImportantNamespaces.Count > 0 && 
-                    !ImportantNamespaces.Any(ns => 
-                        type.Namespace?.StartsWith(ns, StringComparison.OrdinalIgnoreCase) == true))
+                if (!ShouldIncludeType(type)) 
                     continue;
 
                 try
                 {
-                    string typeCode = GenerateTypeStub(type);
-                    lines.AddRange(typeCode.Split(new[] { Environment.NewLine }, StringSplitOptions.None));
-                    lines.Add(""); // пустая строка между типами
+                    string code = GenerateTypeStub(type);
+                    result.AddRange(code.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None));
+                    result.Add("");
                 }
                 catch (Exception ex)
                 {
-                    lines.Add($"// Ошибка при генерации {type.FullName}: {ex.Message}");
+                    result.Add($"// ОШИБКА: {type.FullName} - {ex.Message}");
                 }
             }
         }
 
-        lines.Add("// === КОНЕЦ ГЕНЕРАЦИИ ===");
-        return lines.ToArray();
+        return result.ToArray();
+    }
+
+    private static bool ShouldIncludeType(Type type)
+    {
+        if (TargetNamespaces.Count == 0) return true;
+        return TargetNamespaces.Any(ns => 
+            type.Namespace?.StartsWith(ns, StringComparison.OrdinalIgnoreCase) == true);
     }
 
     private static string GenerateTypeStub(Type type)
     {
         var sb = new StringBuilder();
 
+        // === Добавляем using'и ===
+        sb.AppendLine("using System;");
+        sb.AppendLine("using System.Collections.Generic;");
+        sb.AppendLine("using System.Linq;");
+        sb.AppendLine("using System.Text;");
+        sb.AppendLine("using System.Threading.Tasks;");
+        sb.AppendLine();
+
+        // Namespace
         if (!string.IsNullOrEmpty(type.Namespace))
             sb.AppendLine($"namespace {type.Namespace};");
+        else
+            sb.AppendLine("namespace Stubs;");
 
         sb.AppendLine();
 
-        string kind = type.IsInterface ? "interface" :
-                      type.IsEnum ? "enum" :
-                      type.IsValueType ? "struct" : "class";
+        // Заголовок типа
+        string modifiers = GetTypeModifiers(type);
+        string kind = GetTypeKind(type);
+        string typeName = GetTypeName(type);
 
-        string modifiers = "public ";
-        if (type.IsAbstract && !type.IsInterface) modifiers += "abstract ";
-        if (type.IsSealed && !type.IsEnum) modifiers += "sealed ";
-
-        sb.Append($"{modifiers}{kind} {GetTypeShortName(type)}");
+        sb.Append($"{modifiers}{kind} {typeName}");
 
         // Базовый класс + интерфейсы
-        var bases = new List<string>();
-        if (type.BaseType != null && type.BaseType != typeof(object))
-            bases.Add(GetTypeShortName(type.BaseType));
-
-        foreach (var iface in type.GetInterfaces())
-            bases.Add(GetTypeShortName(iface));
-
-        if (bases.Count > 0)
-            sb.Append($" : {string.Join(", ", bases)}");
+        var inheritance = GetInheritance(type);
+        if (inheritance.Count > 0)
+            sb.Append($" : {string.Join(", ", inheritance)}");
 
         sb.AppendLine();
         sb.AppendLine("{");
 
-        // Методы
-        var methods = type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly);
-        foreach (var m in methods.Where(m => !m.IsSpecialName))
-        {
-            string returnType = GetTypeShortName(m.ReturnType);
-            var parameters = m.GetParameters()
-                .Select(p => $"{GetTypeShortName(p.ParameterType)} {p.Name}");
-
-            string staticMod = m.IsStatic ? "static " : "";
-            sb.AppendLine($"    public {staticMod}{returnType} {m.Name}({string.Join(", ", parameters)})");
-            sb.AppendLine("    {");
-            sb.AppendLine("        throw new System.NotImplementedException();");
-            sb.AppendLine("    }");
-        }
-
-        // Свойства
-        var properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly);
-        foreach (var p in properties)
-        {
-            string propType = GetTypeShortName(p.PropertyType);
-            string staticMod = (p.GetGetMethod()?.IsStatic == true) ? "static " : "";
-            sb.AppendLine($"    public {staticMod}{propType} {p.Name} {{ get; set; }}");
-        }
+        // === Генерация членов ===
+        GenerateMembers(type, sb);
 
         sb.AppendLine("}");
         return sb.ToString();
     }
 
-    private static string GetTypeShortName(Type type)
+    private static string GetTypeModifiers(Type type)
+    {
+        var mods = new List<string> { "public" };
+
+        if (type.IsAbstract && !type.IsInterface) mods.Add("abstract");
+        if (type.IsSealed && !type.IsEnum) mods.Add("sealed");
+
+        return string.Join(" ", mods) + " ";
+    }
+
+    private static string GetTypeKind(Type type)
+    {
+        if (type.IsInterface) return "interface";
+        if (type.IsEnum) return "enum";
+        if (type.IsValueType) return "struct";
+        return "class";
+    }
+
+    private static string GetTypeName(Type type)
     {
         if (type.IsGenericType)
         {
-            var args = string.Join(", ", type.GetGenericArguments().Select(GetTypeShortName));
+            var args = string.Join(", ", type.GetGenericArguments().Select(t => t.Name));
             return $"{type.Name.Split('`')[0]}<{args}>";
         }
-
-        if (type == typeof(int)) return "int";
-        if (type == typeof(string)) return "string";
-        if (type == typeof(bool)) return "bool";
-        if (type == typeof(void)) return "void";
-        if (type == typeof(object)) return "object";
-        if (type == typeof(decimal)) return "decimal";
-        if (type == typeof(DateTime)) return "DateTime";
-
         return type.Name;
+    }
+
+    private static List<string> GetInheritance(Type type)
+    {
+        var list = new List<string>();
+
+        if (type.BaseType != null && type.BaseType != typeof(object))
+            list.Add(GetTypeName(type.BaseType));
+
+        foreach (var iface in type.GetInterfaces())
+            list.Add(GetTypeName(iface));
+
+        return list;
+    }
+
+    private static void GenerateMembers(Type type, StringBuilder sb)
+    {
+        // Методы
+        foreach (var method in type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly))
+        {
+            if (method.IsSpecialName) continue;
+
+            string staticMod = method.IsStatic ? "static " : "";
+            string returnType = GetTypeName(method.ReturnType);
+            var parameters = method.GetParameters()
+                .Select(p => $"{GetTypeName(p.ParameterType)} {p.Name}");
+
+            sb.AppendLine($"    public {staticMod}{returnType} {method.Name}({string.Join(", ", parameters)})");
+            sb.AppendLine("    {");
+            sb.AppendLine("        throw new NotImplementedException();");
+            sb.AppendLine("    }");
+            sb.AppendLine();
+        }
+
+        // Свойства
+        foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly))
+        {
+            string staticMod = prop.GetAccessors().Any(a => a.IsStatic) ? "static " : "";
+            string propType = GetTypeName(prop.PropertyType);
+
+            sb.AppendLine($"    public {staticMod}{propType} {prop.Name} {{ get; set; }}");
+        }
+
+        // События (опционально)
+        foreach (var ev in type.GetEvents(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+        {
+            string eventType = GetTypeName(ev.EventHandlerType);
+            sb.AppendLine($"    public event {eventType} {ev.Name};");
+        }
     }
 }
