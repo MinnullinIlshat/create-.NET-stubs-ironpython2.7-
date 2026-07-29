@@ -195,7 +195,7 @@ public static class PythonStubGenerator
         var imports = new HashSet<string>();
 
         // Базовые
-        imports.Add("typing.Any");
+        // imports.Add("typing.Any");
 
         // Базовый класс и интерфейсы
         if (type.BaseType != null && type.BaseType != typeof(object))
@@ -204,8 +204,9 @@ public static class PythonStubGenerator
         foreach (var iface in type.GetInterfaces())
             AddTypeImport(imports, iface, type);
 
+        var flags = GetMemberFlags(type);
         // Методы
-        foreach (var method in type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly))
+        foreach (var method in type.GetMethods(flags))
         {
             if (method.IsSpecialName) continue;
             if (method.Name.Contains('<') || method.Name.Contains('>') || method.Name.Contains('$'))
@@ -218,7 +219,7 @@ public static class PythonStubGenerator
         }
 
         // Свойства
-        foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly))
+        foreach (var prop in type.GetProperties(flags))
         {
             if (prop.Name.Contains('<') || prop.Name.Contains('>') || prop.Name.Contains('$'))
                 continue;
@@ -499,16 +500,18 @@ public static class PythonStubGenerator
 
     private static bool HasAnyMembers(Type type)
     {
-        return type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly)
+        var flags = GetMemberFlags(type);
+        return type.GetMethods(flags)
                    .Any(m => !m.IsSpecialName)
-            || type.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly).Any();
+            || type.GetProperties(flags).Any();
     }
 
     // ==================== ГЕНЕРАЦИЯ ЧЛЕНОВ ====================
     private static void GenerateMembers(Type type, StringBuilder sb)
     {
+        var flags = GetMemberFlags(type);
         // Группируем методы по имени, чтобы найти перегрузки
-        var methods = type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly)
+        var methods = type.GetMethods(flags)
             .Where(m => !m.IsSpecialName)
             .Where(m => !m.Name.Contains('<') && !m.Name.Contains('>') && !m.Name.Contains('$'))
             .Where(m => !m.Name.StartsWith("get_") && !m.Name.StartsWith("set_") &&
@@ -549,7 +552,7 @@ public static class PythonStubGenerator
         }
 
         // Свойства
-        foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly))
+        foreach (var prop in type.GetProperties(flags))
         {
             if (prop.Name.Contains('<') || prop.Name.Contains('>') || prop.Name.Contains('$'))
                 continue;
@@ -587,6 +590,7 @@ public static class PythonStubGenerator
     private static HashSet<string> CollectTypeVars(Type type)
     {
         var typeVars = new HashSet<string>();
+        var flags = GetMemberFlags(type);
 
         // Параметры самого класса
         foreach (var arg in type.GetGenericArguments())
@@ -619,7 +623,7 @@ public static class PythonStubGenerator
             }
         }
 
-        foreach (var method in type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly))
+        foreach (var method in type.GetMethods(flags))
         {
             if (method.IsSpecialName) continue;
             if (method.Name.Contains('<') || method.Name.Contains('>') || method.Name.Contains('$'))
@@ -630,7 +634,7 @@ public static class PythonStubGenerator
                 CollectFromType(p.ParameterType);
         }
 
-        foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly))
+        foreach (var prop in type.GetProperties(flags))
         {
             if (prop.Name.Contains('<') || prop.Name.Contains('>') || prop.Name.Contains('$'))
                 continue;
@@ -638,5 +642,14 @@ public static class PythonStubGenerator
         }
 
         return typeVars;
+    }
+    private static BindingFlags GetMemberFlags(Type type)
+    {
+        // Для интерфейсов берём все публичные члены, включая унаследованные
+        if (type.IsInterface)
+            return BindingFlags.Public | BindingFlags.Instance;
+
+        // Для классов — объявленные + статические
+        return BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
     }
 }
