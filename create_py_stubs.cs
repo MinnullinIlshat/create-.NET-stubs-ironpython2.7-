@@ -34,6 +34,13 @@ public static class PythonStubGenerator
             {
                 if (!ShouldInclude(type)) continue;
 
+                if (type.IsInterface)
+                {
+                    var impl = ResolveType(type);
+                    if (impl != null && impl != type)
+                        continue; // стаб интерфейса не нужен — везде будет реализация
+                }
+
                 try
                 {
                     string code = GeneratePythonTypeStub(type);
@@ -244,6 +251,9 @@ public static class PythonStubGenerator
     {
         if (usedType == null) return;
 
+        // Подмена до разбора
+        usedType = ResolveType(usedType) ?? usedType;
+
         // Раскрываем ByRef / Array / Pointer
         while (usedType.IsByRef || usedType.IsArray || usedType.IsPointer)
         {
@@ -381,6 +391,10 @@ public static class PythonStubGenerator
     private static string GetPythonTypeName(Type type, bool forClassName = false)
     {
         if (type == null) return "Any";
+
+        // Подмена интерфейса на реализацию (кроме случая, когда генерируем сам интерфейс как класс)
+        if (!forClassName)
+            type = ResolveType(type) ?? type;
 
         // Только typeof(void)
         if (type == typeof(void))
@@ -662,5 +676,62 @@ public static class PythonStubGenerator
     {
         // Всегда берём унаследованные public-члены
         return BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static;
+    }
+    // Явные подмены (если нужно)
+    private static readonly Dictionary<string, Type> InterfaceSubstitutions = new Dictionary<string, Type>(StringComparer.OrdinalIgnoreCase);
+
+    // Кэш: интерфейс → реализация
+    private static readonly Dictionary<Type, Type> SubstitutionCache = new Dictionary<Type, Type>();
+
+    private static Type ResolveType(Type type)
+    {
+        if (type == null) return null;
+
+        // Раскрываем ByRef / Array на уровень элемента — подмену делаем для самого типа
+        // (для массивов/generic отдельно ниже)
+
+        if (SubstitutionCache.TryGetValue(type, out var cached))
+            return cached;
+
+        Type resolved = type;
+
+        // 1) Явная подмена по FullName
+        if (!string.IsNullOrEmpty(type.FullName) &&
+            InterfaceSubstitutions.TryGetValue(type.FullName, out var explicitImpl))
+        {
+            resolved = explicitImpl;
+        }
+        else if (type.IsInterface)
+        {
+            // 2) Авто: IUnitExpressionBuilder → UnitExpressionBuilder
+            //    ищем класс с тем же namespace и именем без ведущей "I"
+            string name = type.Name.Split('`')[0];
+            if (name.Length > 1 && name.StartsWith("I") && char.IsUpper(name[1]))
+            {
+                string implName = name.Substring(1); // убрали I
+                string ns = type.Namespace ?? "";
+
+                // Ищем среди загруженных типов
+                var impl = AppDomain.CurrentDomain.GetAssemblies()
+                    .Where(a => !a.IsDynamic)
+                    .SelectMany(a =>
+                    {
+                        try { return a.GetTypes(); }
+                        catch { return Array.Empty<Type>(); }
+                    })
+                    .FirstOrDefault(t =>
+                        t.IsClass &&
+                        !t.IsAbstract &&
+                        t.Name.Split('`')[0] == implName &&
+                        t.Namespace == ns &&
+                        type.IsAssignableFrom(t)); // реализация подходит под интерфейс
+
+                if (impl != null)
+                    resolved = impl;
+            }
+        }
+
+        SubstitutionCache[type] = resolved;
+        return resolved;
     }
 }
