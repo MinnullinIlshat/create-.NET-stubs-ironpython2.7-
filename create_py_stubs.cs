@@ -160,20 +160,20 @@ public static class PythonStubGenerator
         if (!string.IsNullOrWhiteSpace(type.Namespace))
             sb.AppendLine($"# namespace: {type.Namespace}");
 
-        // === Заголовок класса (Python 3.11 стиль) ===
+        // === Заголовок класса (ТОЛЬКО Python 3.11 стиль) ===
         string className = GetPythonTypeName(type, forClassName: true);
 
-        if (type.IsGenericTypeDefinition || type.GetGenericArguments().Length > 0)
-        {
-            // class MyClass(Generic[T, TKey]):
-            var genericArgs = type.GetGenericArguments()
-                                .Select(t => t.Name)
-                                .ToArray();
+        // Собираем generic-параметры класса
+        var genericArgs = type.GetGenericArguments()
+                            .Where(t => t.IsGenericParameter)
+                            .Select(t => t.Name)
+                            .ToArray();
 
-            if (genericArgs.Length > 0)
-                sb.AppendLine($"class {className}(Generic[{string.Join(", ", genericArgs)}]):");
-            else
-                sb.AppendLine($"class {className}:");
+        if (genericArgs.Length > 0)
+        {
+            // Правильно для Python 3.11:
+            // class MyClass(Generic[TModel, TValue]):
+            sb.AppendLine($"class {className}(Generic[{string.Join(", ", genericArgs)}]):");
         }
         else
         {
@@ -482,7 +482,17 @@ public static class PythonStubGenerator
             return type.Name;
 
         if (forClassName)
-            return type.Name.Split('`')[0];
+        {
+            // Убираем `1, `2 и т.д.
+            string name = type.Name.Split('`')[0];
+
+            // На всякий случай убираем всё, что в квадратных скобках
+            int bracket = name.IndexOf('[');
+            if (bracket >= 0)
+                name = name.Substring(0, bracket);
+
+            return name;
+        }
 
         return type.Name.Split('`')[0];
     }

@@ -80,7 +80,12 @@ def parse_python_stubs(lines: list[str]) -> dict[str, str]:
     in_class = False
 
     namespace_pattern = re.compile(r"^#\s*namespace:\s*([A-Za-z0-9_.]+)\s*$")
-    class_pattern = re.compile(r"^class\s+([A-Za-z_][A-Za-z0-9_]*)\s*[:\(]")
+    class_pattern = re.compile(
+        r"^class\s+([A-Za-z_][A-Za-z0-9_]*)"   # имя класса
+        r"(?:\s*\[[^\]]*\])?"                  # опционально [T, U] (на случай старых стабов)
+        r"(?:\s*\([^)]*\))?"                   # опционально (Generic[...]) или базы
+        r"\s*:"
+    )
     end_marker = "# === END OF TYPE ==="
 
     for line in lines:
@@ -107,7 +112,7 @@ def parse_python_stubs(lines: list[str]) -> dict[str, str]:
         # Начало класса
         class_match = class_pattern.match(stripped)
         if class_match and not in_class:
-            current_class_name = class_match.group(1)
+            current_class_name = class_match.group(1)   # только чистое имя
             current_code.append(line)
             in_class = True
             continue
