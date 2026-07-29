@@ -103,8 +103,8 @@ public static class PythonStubGenerator
             if (lastDot > 0)
             {
                 string module = full;
-                string className = full.Substring(lastDot + 1);
-                sb.AppendLine($"from {module} import {className}");
+                string _className = full.Substring(lastDot + 1);
+                sb.AppendLine($"from {module} import {_className}");
             }
         }
 
