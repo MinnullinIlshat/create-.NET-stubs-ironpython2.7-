@@ -163,22 +163,32 @@ public static class PythonStubGenerator
         // === Заголовок класса (ТОЛЬКО Python 3.11 стиль) ===
         string className = GetPythonTypeName(type, forClassName: true);
 
-        // Собираем generic-параметры класса
+        var bases = new List<string>();
+
+        // Generic-параметры
         var genericArgs = type.GetGenericArguments()
                             .Where(t => t.IsGenericParameter)
                             .Select(t => t.Name)
                             .ToArray();
 
         if (genericArgs.Length > 0)
+            bases.Add($"Generic[{string.Join(", ", genericArgs)}]");
+
+        // Базовый класс
+        if (type.BaseType != null && type.BaseType != typeof(object))
+            bases.Add(GetPythonTypeName(type.BaseType, forClassName: true));
+
+        // Интерфейсы (можно оставить только прямые, если хотите меньше шума)
+        foreach (var iface in type.GetInterfaces())
         {
-            // Правильно для Python 3.11:
-            // class MyClass(Generic[TModel, TValue]):
-            sb.AppendLine($"class {className}(Generic[{string.Join(", ", genericArgs)}]):");
+            if (iface == typeof(object)) continue;
+            bases.Add(GetPythonTypeName(iface, forClassName: true));
         }
+
+        if (bases.Count > 0)
+            sb.AppendLine($"class {className}({string.Join(", ", bases)}):");
         else
-        {
             sb.AppendLine($"class {className}:");
-        }
 
         // Члены
         GenerateMembers(type, sb);
@@ -510,14 +520,18 @@ public static class PythonStubGenerator
     private static void GenerateMembers(Type type, StringBuilder sb)
     {
         var flags = GetMemberFlags(type);
-        // Группируем методы по имени, чтобы найти перегрузки
+
+        // ----- Методы -----
         var methods = type.GetMethods(flags)
             .Where(m => !m.IsSpecialName)
             .Where(m => !m.Name.Contains('<') && !m.Name.Contains('>') && !m.Name.Contains('$'))
             .Where(m => !m.Name.StartsWith("get_") && !m.Name.StartsWith("set_") &&
                         !m.Name.StartsWith("add_") && !m.Name.StartsWith("remove_"))
+            .Where(m => m.DeclaringType != typeof(object))
             .GroupBy(m => m.Name)
             .ToList();
+
+        bool hasAnyOverloads = methods.Any(g => g.Count() > 1);
 
         foreach (var group in methods)
         {
@@ -551,12 +565,13 @@ public static class PythonStubGenerator
             }
         }
 
-        // Свойства
-        foreach (var prop in type.GetProperties(flags))
-        {
-            if (prop.Name.Contains('<') || prop.Name.Contains('>') || prop.Name.Contains('$'))
-                continue;
+        // ----- Свойства -----
+        var properties = type.GetProperties(flags)
+            .Where(p => !p.Name.Contains('<') && !p.Name.Contains('>') && !p.Name.Contains('$'))
+            .Where(p => p.DeclaringType != typeof(object));
 
+        foreach (var prop in properties)
+        {
             string propType = GetPythonTypeName(prop.PropertyType);
 
             if (prop.GetAccessors().Any(a => a.IsStatic))
@@ -645,11 +660,7 @@ public static class PythonStubGenerator
     }
     private static BindingFlags GetMemberFlags(Type type)
     {
-        // Для интерфейсов берём все публичные члены, включая унаследованные
-        if (type.IsInterface)
-            return BindingFlags.Public | BindingFlags.Instance;
-
-        // Для классов — объявленные + статические
-        return BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
+        // Всегда берём унаследованные public-члены
+        return BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static;
     }
 }
