@@ -233,18 +233,20 @@ public static class PythonStubGenerator
     {
         if (usedType == null) return;
 
-        // Раскрываем ByRef и массивы
-        while (usedType.IsByRef || usedType.IsArray)
+        // Раскрываем ByRef / Array / Pointer
+        while (usedType.IsByRef || usedType.IsArray || usedType.IsPointer)
+        {
             usedType = usedType.GetElementType();
+            if (usedType == null) return;
+        }
 
-        if (usedType == null) return;
-
-        // Простые типы — пропускаем
+        // Простые типы
         if (usedType == typeof(void) ||
             usedType == typeof(string) || usedType == typeof(int) || usedType == typeof(bool) ||
             usedType == typeof(double) || usedType == typeof(float) || usedType == typeof(decimal) ||
             usedType == typeof(long) || usedType == typeof(object) || usedType == typeof(byte) ||
-            usedType == typeof(short) || usedType == typeof(uint) || usedType == typeof(ulong))
+            usedType == typeof(short) || usedType == typeof(uint) || usedType == typeof(ulong) ||
+            usedType == typeof(char) || usedType == typeof(sbyte))
             return;
 
         // ValueTuple
@@ -252,7 +254,7 @@ public static class PythonStubGenerator
             (usedType.FullName.StartsWith("System.ValueTuple") || usedType.Name.StartsWith("ValueTuple")))
             return;
 
-        // Nullable<T> — только внутренний тип
+        // Nullable<T>
         if (usedType.IsGenericType && usedType.GetGenericTypeDefinition() == typeof(Nullable<>))
         {
             foreach (var arg in usedType.GetGenericArguments())
@@ -260,56 +262,45 @@ public static class PythonStubGenerator
             return;
         }
 
-        // === Generic System-типы ===
+        // === Generic типы ===
         if (usedType.IsGenericType)
         {
             var genDef = usedType.GetGenericTypeDefinition();
             string genName = genDef.Name.Split('`')[0];
+            string ns = genDef.Namespace ?? "";
 
-            // Task / Task<T>
-            if (genDef.FullName != null && genDef.FullName.StartsWith("System.Threading.Tasks.Task"))
-            {
+            // Task
+            if (ns.StartsWith("System.Threading.Tasks") && genName == "Task")
                 imports.Add("System.Threading.Tasks.Task");
-            }
-            // Expression / Expression<T>
-            else if (genDef.FullName != null && genDef.FullName.StartsWith("System.Linq.Expressions.Expression"))
-            {
+            // Expression
+            else if (ns.StartsWith("System.Linq.Expressions") && genName == "Expression")
                 imports.Add("System.Linq.Expressions.Expression");
-            }
-            // Func / Action
+            // Func / Action → Callable
             else if (genName == "Func" || genName == "Action")
-            {
                 imports.Add("collections.abc.Callable");
-                // или "typing.Callable" — оба допустимы, collections.abc предпочтительнее
-            }
             // Dictionary / IDictionary
             else if (genDef == typeof(Dictionary<,>) || genDef == typeof(IDictionary<,>))
             {
                 imports.Add("System.Collections.Generic.Dictionary");
                 imports.Add("System.Collections.Generic.IDictionary");
             }
-            // IEnumerable и подобные → Iterable
+            // IEnumerable → Iterable
             else if (genDef == typeof(IEnumerable<>) ||
                     genDef == typeof(IReadOnlyList<>) ||
                     genDef == typeof(IReadOnlyCollection<>) ||
                     genDef == typeof(IEnumerator<>))
-            {
                 imports.Add("collections.abc.Iterable");
-            }
-            // List / IList
-            else if (genDef == typeof(List<>) || genDef == typeof(IList<>) || genDef == typeof(ICollection<>))
-            {
-                // list[...] — встроенный
-            }
-            // Остальные System.Collections.Generic
-            else if (genDef.Namespace != null && genDef.Namespace.StartsWith("System.Collections.Generic"))
-            {
+            // System.Collections.Generic.*
+            else if (ns.StartsWith("System.Collections.Generic"))
                 imports.Add($"System.Collections.Generic.{genName}");
-            }
-            // Прочие System.*
-            else if (genDef.Namespace != null && genDef.Namespace.StartsWith("System"))
+            // Остальные System.*
+            else if (ns.StartsWith("System"))
+                imports.Add($"{ns}.{genName}");
+            // Ваши generic-классы
+            else if (!string.IsNullOrEmpty(ns))
             {
-                imports.Add($"{genDef.Namespace}.{genName}");
+                // project:Namespace.ClassName
+                imports.Add($"project:{ns}.{genName}");
             }
 
             // Рекурсивно аргументы
@@ -319,63 +310,58 @@ public static class PythonStubGenerator
             return;
         }
 
-        // === Не-generic System-типы ===
+        // === Не-generic System типы ===
         if (usedType.Namespace != null && usedType.Namespace.StartsWith("System"))
         {
-            // Task
-            if (usedType == typeof(System.Threading.Tasks.Task) ||
-                usedType.FullName == "System.Threading.Tasks.Task")
-            {
-                imports.Add("System.Threading.Tasks.Task");
-                return;
-            }
+            string ns = usedType.Namespace;
+            string name = usedType.Name.Split('`')[0];
 
-            // Expression
-            if (usedType.FullName != null && usedType.FullName.StartsWith("System.Linq.Expressions.Expression"))
-            {
-                imports.Add("System.Linq.Expressions.Expression");
-                return;
-            }
-
-            // IDictionary (не-generic)
-            if (usedType == typeof(System.Collections.IDictionary))
-            {
-                imports.Add("System.Collections.IDictionary");
-                return;
-            }
-
-            // IEnumerable (не-generic)
-            if (usedType == typeof(System.Collections.IEnumerable))
-            {
-                imports.Add("collections.abc.Iterable");
-                return;
-            }
-
-            // Обычные System-типы
-            if (usedType.Namespace.StartsWith("System.Collections.Generic"))
-                imports.Add($"System.Collections.Generic.{usedType.Name}");
-            else if (usedType.Namespace.StartsWith("System.Collections"))
-                imports.Add($"System.Collections.{usedType.Name}");
-            else if (usedType.Namespace.StartsWith("System.Threading.Tasks"))
-                imports.Add($"System.Threading.Tasks.{usedType.Name}");
-            else if (usedType.Namespace.StartsWith("System.Linq.Expressions"))
-                imports.Add($"System.Linq.Expressions.{usedType.Name}");
+            if (ns.StartsWith("System.Threading.Tasks"))
+                imports.Add($"System.Threading.Tasks.{name}");
+            else if (ns.StartsWith("System.Linq.Expressions"))
+                imports.Add($"System.Linq.Expressions.{name}");
+            else if (ns.StartsWith("System.Collections.Generic"))
+                imports.Add($"System.Collections.Generic.{name}");
+            else if (ns.StartsWith("System.Collections"))
+                imports.Add($"System.Collections.{name}");
             else
-                imports.Add($"System.{usedType.Name}");
+                imports.Add($"System.{name}");
 
             return;
         }
 
-        // === Типы из ваших namespace'ов (Common, Avanpost и т.д.) ===
-        // Импорт пишется ВСЕГДА, даже если файл ещё не существует
+        // === Ваши типы (самое важное) ===
+        // Импорт пишется ВСЕГДА, даже если файла ещё нет
         if (usedType == currentType)
             return;
 
-        if (!string.IsNullOrWhiteSpace(usedType.Namespace) && !string.IsNullOrWhiteSpace(usedType.Name))
+        // Получаем чистое имя и namespace
+        string typeNamespace = usedType.Namespace;
+        string typeName = usedType.Name.Split('`')[0];
+
+        // На случай вложенных типов (Outer+Inner)
+        if (typeName.Contains('+'))
+            typeName = typeName.Substring(typeName.LastIndexOf('+') + 1);
+
+        if (string.IsNullOrWhiteSpace(typeNamespace) || string.IsNullOrWhiteSpace(typeName))
         {
-            // Убираем generic-суффикс
-            string cleanName = usedType.Name.Split('`')[0];
-            string full = $"{usedType.Namespace}.{cleanName}";
+            // Fallback через FullName
+            if (!string.IsNullOrEmpty(usedType.FullName))
+            {
+                string fullName = usedType.FullName.Split('`')[0].Split(',')[0].Trim();
+                // FullName может быть "Namespace.Class"
+                int lastDot = fullName.LastIndexOf('.');
+                if (lastDot > 0)
+                {
+                    typeNamespace = fullName.Substring(0, lastDot);
+                    typeName = fullName.Substring(lastDot + 1);
+                }
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(typeNamespace) && !string.IsNullOrWhiteSpace(typeName))
+        {
+            string full = $"{typeNamespace}.{typeName}";
             imports.Add($"project:{full}");
         }
     }
