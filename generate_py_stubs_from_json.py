@@ -16,28 +16,48 @@ def generate_python_stubs(json_path: str = "stubs.json", root: str = "."):
     stubs = parse_python_stubs(lines)
 
     created = 0
+    created_inits = 0
+
     for full_name, code in stubs.items():
         if not code.strip():
             continue
 
-        # full_name = "Namespace.Sub.ClassName"
         parts = full_name.split(".")
         if len(parts) > 1:
-            # Папки по namespace, файл = имя класса
             folder = typings_dir / Path(*parts[:-1])
             filename = parts[-1] + ".pyi"
         else:
             folder = typings_dir
             filename = full_name + ".pyi"
 
+        # Создаём все родительские папки
         folder.mkdir(parents=True, exist_ok=True)
-        file_path = folder / filename
 
+        # === Создаём __init__.pyi во всех папках по пути ===
+        current = typings_dir
+        # parts[:-1] — это namespace-части
+        for part in parts[:-1]:
+            current = current / part
+            init_file = current / "__init__.pyi"
+            if not init_file.exists():
+                init_file.write_text("", encoding="utf-8")  # пустой файл
+                created_inits += 1
+
+        # На всякий случай создаём __init__.pyi и в корне typings
+        root_init = typings_dir / "__init__.pyi"
+        if not root_init.exists():
+            root_init.write_text("", encoding="utf-8")
+            created_inits += 1
+
+        # Записываем сам стаб
+        file_path = folder / filename
         file_path.write_text(code.rstrip() + "\n", encoding="utf-8")
         created += 1
         print(f"  → {file_path.relative_to(root)}")
 
-    print(f"\n✅ Готово! Создано файлов: {created}")
+    print(f"\n✅ Готово!")
+    print(f"   Создано файлов стабов: {created}")
+    print(f"   Создано __init__.pyi:  {created_inits}")
     print(f"Стабы лежат в: {typings_dir}")
 
 
