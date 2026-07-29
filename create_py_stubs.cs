@@ -71,6 +71,7 @@ public static class PythonStubGenerator
 
         // --- Запись импортов ---
         var typingImports = new SortedSet<string>();
+        var collectionsAbcImports = new SortedSet<string>();
         var systemImports = new SortedSet<string>();
         var projectImports = new SortedSet<string>();
 
@@ -78,24 +79,49 @@ public static class PythonStubGenerator
         {
             if (imp.StartsWith("typing."))
                 typingImports.Add(imp.Substring(7));
+            else if (imp.StartsWith("collections.abc."))
+                collectionsAbcImports.Add(imp.Substring("collections.abc.".Length));
             else if (imp.StartsWith("System."))
-                systemImports.Add(imp.Substring(7));
+                systemImports.Add(imp.Substring(7)); // может содержать Collections.Generic.XXX
             else if (imp.StartsWith("project:"))
                 projectImports.Add(imp.Substring(8));
         }
 
-        // TypeVar и Generic всегда нужны, если есть generic-параметры
+        // TypeVar + Generic + overload
         if (typeVars.Count > 0)
         {
             typingImports.Add("TypeVar");
             typingImports.Add("Generic");
         }
+        typingImports.Add("overload"); // почти всегда полезно
 
         if (typingImports.Count > 0)
             sb.AppendLine($"from typing import {string.Join(", ", typingImports)}");
 
-        if (systemImports.Count > 0)
-            sb.AppendLine($"from System import {string.Join(", ", systemImports)}");
+        if (collectionsAbcImports.Count > 0)
+            sb.AppendLine($"from collections.abc import {string.Join(", ", collectionsAbcImports)}");
+
+        // System-импорты (с правильными путями)
+        var plainSystem = new SortedSet<string>();
+        var genericSystem = new SortedSet<string>();
+        var collectionsSystem = new SortedSet<string>();
+
+        foreach (var s in systemImports)
+        {
+            if (s.StartsWith("Collections.Generic."))
+                genericSystem.Add(s.Substring("Collections.Generic.".Length));
+            else if (s.StartsWith("Collections."))
+                collectionsSystem.Add(s.Substring("Collections.".Length));
+            else
+                plainSystem.Add(s);
+        }
+
+        if (plainSystem.Count > 0)
+            sb.AppendLine($"from System import {string.Join(", ", plainSystem)}");
+        if (collectionsSystem.Count > 0)
+            sb.AppendLine($"from System.Collections import {string.Join(", ", collectionsSystem)}");
+        if (genericSystem.Count > 0)
+            sb.AppendLine($"from System.Collections.Generic import {string.Join(", ", genericSystem)}");
 
         foreach (var full in projectImports)
         {
@@ -108,7 +134,7 @@ public static class PythonStubGenerator
             }
         }
 
-        if (typingImports.Count + systemImports.Count + projectImports.Count > 0)
+        if (typingImports.Count + collectionsAbcImports.Count + systemImports.Count + projectImports.Count > 0)
             sb.AppendLine();
 
         // === TypeVar объявления ===
@@ -196,25 +222,24 @@ public static class PythonStubGenerator
     {
         if (usedType == null) return;
 
-        // Раскрываем ByRef и массивы
         if (usedType.IsByRef || usedType.IsArray)
             usedType = usedType.GetElementType();
 
         if (usedType == null) return;
 
-        // Простые типы — пропускаем
-        if (usedType == typeof(void) || usedType == typeof(System.Void) ||
+        // Простые типы
+        if (usedType == typeof(void) ||
             usedType == typeof(string) || usedType == typeof(int) || usedType == typeof(bool) ||
             usedType == typeof(double) || usedType == typeof(float) || usedType == typeof(decimal) ||
             usedType == typeof(long) || usedType == typeof(object))
             return;
 
-        // ValueTuple — не импортируем
+        // ValueTuple
         if (usedType.FullName != null &&
             (usedType.FullName.StartsWith("System.ValueTuple") || usedType.Name.StartsWith("ValueTuple")))
             return;
 
-        // Nullable — рекурсивно только для T
+        // Nullable
         if (usedType.IsGenericType && usedType.GetGenericTypeDefinition() == typeof(Nullable<>))
         {
             foreach (var arg in usedType.GetGenericArguments())
@@ -222,46 +247,55 @@ public static class PythonStubGenerator
             return;
         }
 
-        // Generic System-коллекции
         if (usedType.IsGenericType)
         {
             var genDef = usedType.GetGenericTypeDefinition();
 
-            if (genDef == typeof(Dictionary<,>))
+            if (genDef == typeof(Dictionary<,>) || genDef == typeof(IDictionary<,>))
             {
-                imports.Add("System.Dictionary");
+                imports.Add("System.Collections.Generic.Dictionary");
+                // IDictionary тоже может понадобиться
+                imports.Add("System.Collections.Generic.IDictionary");
             }
             else if (genDef == typeof(IEnumerable<>) ||
                     genDef == typeof(IReadOnlyList<>) ||
                     genDef == typeof(IReadOnlyCollection<>))
             {
-                imports.Add("typing.Iterable");
+                // Iterable из collections.abc
+                imports.Add("collections.abc.Iterable");
             }
-            // list[...] — встроенный, импорт не нужен
 
-            // Рекурсивно для аргументов
             foreach (var arg in usedType.GetGenericArguments())
                 AddTypeImport(imports, arg, currentType);
 
             return;
         }
 
-        // === System-типы ===
-        if (usedType.Namespace != null && usedType.Namespace.StartsWith("System"))
+        // Не-generic IDictionary
+        if (usedType == typeof(System.Collections.IDictionary))
         {
-            imports.Add($"System.{usedType.Name}");
+            imports.Add("System.Collections.IDictionary");
             return;
         }
 
-        // === Типы из ваших namespace'ов (самое важное исправление) ===
-        // Не импортируем сам себя
-        if (usedType == currentType)
+        // System-типы
+        if (usedType.Namespace != null && usedType.Namespace.StartsWith("System"))
+        {
+            // Более точный путь
+            if (usedType.Namespace.StartsWith("System.Collections.Generic"))
+                imports.Add($"System.Collections.Generic.{usedType.Name.Split('`')[0]}");
+            else if (usedType.Namespace.StartsWith("System.Collections"))
+                imports.Add($"System.Collections.{usedType.Name.Split('`')[0]}");
+            else
+                imports.Add($"System.{usedType.Name.Split('`')[0]}");
             return;
+        }
+
+        // Собственные типы проекта
+        if (usedType == currentType) return;
 
         if (!string.IsNullOrWhiteSpace(usedType.Namespace) && !string.IsNullOrWhiteSpace(usedType.Name))
         {
-            // Формат: "project:Namespace.ClassName"
-            // Потом при генерации превратим в правильный from ... import ...
             string full = $"{usedType.Namespace}.{usedType.Name.Split('`')[0]}";
             imports.Add($"project:{full}");
         }
@@ -272,7 +306,7 @@ public static class PythonStubGenerator
     {
         if (type == null) return "Any";
 
-        // Только typeof(void) — System.Void не используем
+        // Только typeof(void)
         if (type == typeof(void))
             return "None";
 
@@ -316,25 +350,31 @@ public static class PythonStubGenerator
             if (genDef == typeof(Nullable<>))
                 return $"{args[0]} | None";
 
-            if (genDef == typeof(Dictionary<,>))
+            // Dictionary / IDictionary
+            if (genDef == typeof(Dictionary<,>) || genDef == typeof(IDictionary<,>))
                 return $"Dictionary[{args[0]}, {args[1]}]";
 
+            // List / IList / ICollection
             if (genDef == typeof(List<>) || genDef == typeof(IList<>) || genDef == typeof(ICollection<>))
                 return $"list[{args[0]}]";
 
+            // IEnumerable / IReadOnlyList → Iterable
             if (genDef == typeof(IEnumerable<>) ||
                 genDef == typeof(IReadOnlyList<>) ||
                 genDef == typeof(IReadOnlyCollection<>))
                 return $"Iterable[{args[0]}]";
 
-            // Обычный generic
             string baseName = genDef.Name.Split('`')[0];
             return $"{baseName}[{string.Join(", ", args)}]";
         }
 
-        // Generic type parameter (T, TKey, TValue...)
+        // Не-generic IDictionary
+        if (type == typeof(System.Collections.IDictionary))
+            return "IDictionary";
+
+        // Generic type parameter
         if (type.IsGenericParameter)
-            return type.Name; // оставим T, TKey и т.д.
+            return type.Name;
 
         if (forClassName)
             return type.Name.Split('`')[0];
@@ -352,41 +392,50 @@ public static class PythonStubGenerator
     // ==================== ГЕНЕРАЦИЯ ЧЛЕНОВ ====================
     private static void GenerateMembers(Type type, StringBuilder sb)
     {
-        // Методы
-        foreach (var method in type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly))
+        // Группируем методы по имени, чтобы найти перегрузки
+        var methods = type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly)
+            .Where(m => !m.IsSpecialName)
+            .Where(m => !m.Name.Contains('<') && !m.Name.Contains('>') && !m.Name.Contains('$'))
+            .Where(m => !m.Name.StartsWith("get_") && !m.Name.StartsWith("set_") &&
+                        !m.Name.StartsWith("add_") && !m.Name.StartsWith("remove_"))
+            .GroupBy(m => m.Name)
+            .ToList();
+
+        foreach (var group in methods)
         {
-            // === Фильтр невалидных имён ===
-            if (method.IsSpecialName) continue;
-            if (method.Name.Contains('<') || method.Name.Contains('>') || method.Name.Contains('$'))
-                continue;
-            if (method.Name.StartsWith("get_") || method.Name.StartsWith("set_") || method.Name.StartsWith("add_") || method.Name.StartsWith("remove_"))
-                continue;
+            var overloads = group.ToList();
+            bool hasOverloads = overloads.Count > 1;
 
-            string returnType = GetPythonTypeName(method.ReturnType);
-            var parameters = method.GetParameters()
-                .Select(p => $"{SanitizeParamName(p.Name)}: {GetPythonTypeName(p.ParameterType)}")
-                .ToList();
-
-            if (method.IsStatic)
+            foreach (var method in overloads)
             {
-                sb.AppendLine("    @staticmethod");
-                sb.AppendLine($"    def {method.Name}({string.Join(", ", parameters)}) -> {returnType}:");
-            }
-            else
-            {
-                var allParams = new List<string> { "self" };
-                allParams.AddRange(parameters);
-                sb.AppendLine($"    def {method.Name}({string.Join(", ", allParams)}) -> {returnType}:");
-            }
+                if (hasOverloads)
+                    sb.AppendLine("    @overload");
 
-            sb.AppendLine("        ...");
-            sb.AppendLine();
+                string returnType = GetPythonTypeName(method.ReturnType);
+                var parameters = method.GetParameters()
+                    .Select(p => $"{SanitizeParamName(p.Name)}: {GetPythonTypeName(p.ParameterType)}")
+                    .ToList();
+
+                if (method.IsStatic)
+                {
+                    sb.AppendLine("    @staticmethod");
+                    sb.AppendLine($"    def {method.Name}({string.Join(", ", parameters)}) -> {returnType}:");
+                }
+                else
+                {
+                    var allParams = new List<string> { "self" };
+                    allParams.AddRange(parameters);
+                    sb.AppendLine($"    def {method.Name}({string.Join(", ", allParams)}) -> {returnType}:");
+                }
+
+                sb.AppendLine("        ...");
+                sb.AppendLine();
+            }
         }
 
         // Свойства
         foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly))
         {
-            // Пропускаем свойства с невалидными именами
             if (prop.Name.Contains('<') || prop.Name.Contains('>') || prop.Name.Contains('$'))
                 continue;
 
@@ -409,11 +458,15 @@ public static class PythonStubGenerator
     private static string SanitizeParamName(string name)
     {
         if (string.IsNullOrEmpty(name)) return "arg";
-        // Python не любит некоторые имена
-        if (name == "from") return "from_";
-        if (name == "class") return "class_";
-        if (name == "def") return "def_";
-        return name;
+        return name switch
+        {
+            "from" => "from_",
+            "class" => "class_",
+            "def" => "def_",
+            "import" => "import_",
+            "global" => "global_",
+            _ => name
+        };
     }
 
     private static HashSet<string> CollectTypeVars(Type type)
