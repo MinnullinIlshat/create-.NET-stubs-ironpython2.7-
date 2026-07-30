@@ -683,51 +683,55 @@ public static class PythonStubGenerator
     // Кэш: интерфейс → реализация
     private static readonly Dictionary<Type, Type> SubstitutionCache = new Dictionary<Type, Type>();
 
+    /// <summary>
+    /// Возвращает тип, который нужно использовать в аннотациях/импортах.
+    /// Подмена IXxx → Xxx только если реализация найдена.
+    /// </summary>
     private static Type ResolveType(Type type)
     {
         if (type == null) return null;
-
-        // Раскрываем ByRef / Array на уровень элемента — подмену делаем для самого типа
-        // (для массивов/generic отдельно ниже)
 
         if (SubstitutionCache.TryGetValue(type, out var cached))
             return cached;
 
         Type resolved = type;
 
-        // 1) Явная подмена по FullName
-        if (!string.IsNullOrEmpty(type.FullName) &&
-            InterfaceSubstitutions.TryGetValue(type.FullName, out var explicitImpl))
+        if (type.IsInterface)
         {
-            resolved = explicitImpl;
-        }
-        else if (type.IsInterface)
-        {
-            // 2) Авто: IUnitExpressionBuilder → UnitExpressionBuilder
-            //    ищем класс с тем же namespace и именем без ведущей "I"
             string name = type.Name.Split('`')[0];
-            if (name.Length > 1 && name.StartsWith("I") && char.IsUpper(name[1]))
+
+            // Только если имя вида ISomething (I + заглавная)
+            if (name.Length > 1 && name[0] == 'I' && char.IsUpper(name[1]))
             {
-                string implName = name.Substring(1); // убрали I
+                string implName = name.Substring(1);
                 string ns = type.Namespace ?? "";
 
-                // Ищем среди загруженных типов
-                var impl = AppDomain.CurrentDomain.GetAssemblies()
-                    .Where(a => !a.IsDynamic)
-                    .SelectMany(a =>
-                    {
-                        try { return a.GetTypes(); }
-                        catch { return Array.Empty<Type>(); }
-                    })
-                    .FirstOrDefault(t =>
+                Type impl = null;
+
+                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+                {
+                    if (asm.IsDynamic) continue;
+
+                    Type[] types;
+                    try { types = asm.GetTypes(); }
+                    catch { continue; }
+
+                    impl = types.FirstOrDefault(t =>
                         t.IsClass &&
                         !t.IsAbstract &&
+                        t.IsPublic &&
                         t.Name.Split('`')[0] == implName &&
-                        t.Namespace == ns &&
-                        type.IsAssignableFrom(t)); // реализация подходит под интерфейс
+                        (t.Namespace ?? "") == ns &&
+                        type.IsAssignableFrom(t));
 
+                    if (impl != null)
+                        break;
+                }
+
+                // Подменяем ТОЛЬКО если реализация найдена
                 if (impl != null)
                     resolved = impl;
+                // иначе resolved остаётся интерфейсом
             }
         }
 
