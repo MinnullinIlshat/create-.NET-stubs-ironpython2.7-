@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Collections.Concurrent;
 
 public static class PythonStubGenerator
 {
@@ -681,7 +682,7 @@ public static class PythonStubGenerator
     private static readonly Dictionary<string, Type> InterfaceSubstitutions = new Dictionary<string, Type>(StringComparer.OrdinalIgnoreCase);
 
     // Кэш: интерфейс → реализация
-    private static readonly Dictionary<Type, Type> SubstitutionCache = new Dictionary<Type, Type>();
+    private static readonly ConcurrentDictionary<Type, Type> SubstitutionCache = new ConcurrentDictionary<Type, Type>();
 
     /// <summary>
     /// Возвращает тип, который нужно использовать в аннотациях/импортах.
@@ -691,6 +692,7 @@ public static class PythonStubGenerator
     {
         if (type == null) return null;
 
+        // Быстрый путь из кэша
         if (SubstitutionCache.TryGetValue(type, out var cached))
             return cached;
 
@@ -700,7 +702,6 @@ public static class PythonStubGenerator
         {
             string name = type.Name.Split('`')[0];
 
-            // Только если имя вида ISomething (I + заглавная)
             if (name.Length > 1 && name[0] == 'I' && char.IsUpper(name[1]))
             {
                 string implName = name.Substring(1);
@@ -728,14 +729,15 @@ public static class PythonStubGenerator
                         break;
                 }
 
-                // Подменяем ТОЛЬКО если реализация найдена
                 if (impl != null)
                     resolved = impl;
-                // иначе resolved остаётся интерфейсом
             }
         }
 
+        // Потокобезопасная запись в кэш
         SubstitutionCache[type] = resolved;
+        // или: SubstitutionCache.TryAdd(type, resolved);
+
         return resolved;
     }
 }
