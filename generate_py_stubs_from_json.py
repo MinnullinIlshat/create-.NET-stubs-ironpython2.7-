@@ -12,9 +12,8 @@ def generate_python_stubs(json_path: str = "stubs.json", root: str = "."):
     with open(json_path, "r", encoding="utf-8") as f:
         lines = json.load(f)
 
-    stubs = parse_python_stubs(lines)  # full_name -> code
+    stubs = parse_python_stubs(lines)
 
-    # Группируем по namespace: "Avanpost.Idm.UnitScriptModel" → ns "Avanpost.Idm"
     by_ns = defaultdict(list)
     for full_name, code in stubs.items():
         if not code.strip():
@@ -24,16 +23,13 @@ def generate_python_stubs(json_path: str = "stubs.json", root: str = "."):
         class_name = parts[-1]
         by_ns[ns].append((class_name, code))
 
-    created = 0
-
-    # Корень пакета
     (typings_dir / "__init__.pyi").write_text("", encoding="utf-8")
+    created = 0
 
     for ns, items in sorted(by_ns.items(), key=lambda x: x[0]):
         folder = typings_dir.joinpath(*ns.split(".")) if ns else typings_dir
         folder.mkdir(parents=True, exist_ok=True)
 
-        # Пустые __init__.pyi у всех родителей
         current = typings_dir
         if ns:
             for part in ns.split("."):
@@ -51,52 +47,66 @@ def generate_python_stubs(json_path: str = "stubs.json", root: str = "."):
 
     print(f"\nГотово. Файлов __init__.pyi с классами: {created}")
 
-# ---------------------------------------------------------------------------
-# Слияние классов одного namespace в один __init__.pyi
-# ---------------------------------------------------------------------------
-
-_FROM_IMPORT = re.compile(
-    r"^from\s+([A-Za-z0-9_.]+)\s+import\s+(.+)$"
-)
+_FROM_IMPORT = re.compile(r"^from\s+([A-Za-z0-9_.]+)\s+import\s+(.+)$")
 _PLAIN_IMPORT = re.compile(r"^import\s+(.+)$")
 _TYPEVAR = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*TypeVar\(")
 _CLASS = re.compile(r"^class\s+")
 _NAMESPACE_COMMENT = re.compile(r"^#\s*namespace:")
+_ANY_TOKEN = re.compile(r"\bAny\b")
+
+def normalize_from_import(module, names):
+    """
+    from System.Collections import Immutable.ImmutableArray
+      → module=System.Collections.Immutable, names=[ImmutableArray]
+    from A.B.Foo import Foo
+      → module=A.B, names=[Foo]
+    """
+    fixed = []
+    for name in names:
+        name = name.strip()
+        if not name or name == "*":
+            continue
+        # from X import A.B  →  from X.A import B
+        if "." in name:
+            prefix, last = name.rsplit(".", 1)
+            module = f"{module}.{prefix}"
+            name = last
+        # from A.B.Foo import Foo  →  from A.B import Foo
+        if module.endswith("." + name):
+            module = module[: -(len(name) + 1)]
+        fixed.append(name)
+    return module, fixed
 
 def merge_namespace_file(ns, items, names_in_this_file):
-    # module -> set(names)   для from X import A, B
     from_map = defaultdict(set)
     plain_imports = set()
-    typevars = {}  # name -> line
+    typevars = {}
     bodies = []
+    body_needs_any = False
 
     for class_name, code in sorted(items, key=lambda x: x[0]):
         imports, tvs, body = split_class_block(code)
+
+        if _ANY_TOKEN.search(body):
+            body_needs_any = True
 
         for raw in imports:
             raw = raw.strip()
             if not raw:
                 continue
+
             m = _FROM_IMPORT.match(raw)
             if m:
                 module, names_str = m.group(1), m.group(2)
-                names = [n.strip() for n in names_str.split(",") if n.strip() and n.strip() != "*"]
                 star = "*" in names_str
+                names = [n.strip() for n in names_str.split(",") if n.strip() and n.strip() != "*"]
+                module, names = normalize_from_import(module, names)
 
-                # from A.B.Class import Class  →  from A.B import Class
-                if len(names) == 1 and module.endswith("." + names[0]):
-                    module = module[: -(len(names[0]) + 1)]
-
-                # тот же namespace / тот же файл — импорт не нужен
                 if module == ns:
                     continue
-                if names and all(n in names_in_this_file for n in names) and module == ns:
-                    continue
-                # from . import Foo когда Foo в этом же файле
-                names = [n for n in names if n not in names_in_this_file or module != ns]
+                names = [n for n in names if not (n in names_in_this_file and module == ns)]
                 if not names and not star:
                     continue
-
                 if star:
                     from_map[module].add("*")
                 else:
@@ -106,7 +116,6 @@ def merge_namespace_file(ns, items, names_in_this_file):
             m = _PLAIN_IMPORT.match(raw)
             if m:
                 plain_imports.add(m.group(1).strip())
-                continue
 
         for name, line in tvs.items():
             typevars.setdefault(name, line)
@@ -114,6 +123,9 @@ def merge_namespace_file(ns, items, names_in_this_file):
         body = body.strip("\n")
         if body:
             bodies.append(body)
+
+    if body_needs_any:
+        from_map["typing"].add("Any")
 
     out = []
 
@@ -128,22 +140,14 @@ def merge_namespace_file(ns, items, names_in_this_file):
     for mod in sorted(plain_imports):
         out.append(f"import {mod}")
 
-    def sys_key(mod):
-        order = [
-            "System",
-            "System.Collections",
-            "System.Collections.Generic",
-            "System.Threading.Tasks",
-            "System.Linq.Expressions",
-        ]
-        try:
-            return (0, order.index(mod), mod)
-        except ValueError:
-            if mod.startswith("System"):
-                return (1, 0, mod)
-            return (2, 0, mod)
+    def sort_modules(mod):
+        if mod.startswith("System."):
+            return (0, mod)
+        if mod.startswith("System"):
+            return (0, mod)
+        return (1, mod)
 
-    for mod in sorted(from_map.keys(), key=sys_key):
+    for mod in sorted(from_map.keys(), key=sort_modules):
         names = from_map[mod]
         if "*" in names:
             out.append(f"from {mod} import *")
@@ -163,7 +167,6 @@ def merge_namespace_file(ns, items, names_in_this_file):
     return "\n".join(out)
 
 def split_class_block(code):
-    """Делит блок класса на (import-строки, TypeVar, тело начиная с class)."""
     imports = []
     typevars = {}
     body_lines = []
@@ -178,9 +181,9 @@ def split_class_block(code):
                 continue
             if _NAMESPACE_COMMENT.match(stripped):
                 continue
-            if _TYPEVAR.match(stripped):
-                name = _TYPEVAR.match(stripped).group(1)
-                typevars[name] = stripped
+            tv = _TYPEVAR.match(stripped)
+            if tv:
+                typevars[tv.group(1)] = stripped
                 continue
             if stripped.startswith(("from ", "import ")):
                 imports.append(stripped)
@@ -189,10 +192,6 @@ def split_class_block(code):
         body_lines.append(line)
 
     return imports, typevars, "\n".join(body_lines)
-
-# ---------------------------------------------------------------------------
-# Парсер вывода C# генератора
-# ---------------------------------------------------------------------------
 
 def parse_python_stubs(lines):
     stubs = {}

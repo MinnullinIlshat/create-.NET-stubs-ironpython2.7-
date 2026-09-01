@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 
 public static class PythonStubGenerator
 {
@@ -173,30 +174,21 @@ public static class PythonStubGenerator
         var fromCollections = new SortedSet<string>();
         var fromGeneric = new SortedSet<string>();
 
+        var byModule = new SortedDictionary<string, SortedSet<string>>();
+
         foreach (var full in systemImports)
         {
-            if (full.StartsWith("System.Threading.Tasks."))
-                fromTasks.Add(full.Substring("System.Threading.Tasks.".Length));
-            else if (full.StartsWith("System.Linq.Expressions."))
-                fromExpressions.Add(full.Substring("System.Linq.Expressions.".Length));
-            else if (full.StartsWith("System.Collections.Generic."))
-                fromGeneric.Add(full.Substring("System.Collections.Generic.".Length));
-            else if (full.StartsWith("System.Collections."))
-                fromCollections.Add(full.Substring("System.Collections.".Length));
-            else if (full.StartsWith("System."))
-                fromSystem.Add(full.Substring("System.".Length));
+            int lastDot = full.LastIndexOf('.');
+            if (lastDot <= 0) continue;
+            string module = full.Substring(0, lastDot);      // System.Collections.Immutable
+            string name = full.Substring(lastDot + 1);       // ImmutableArray
+            if (!byModule.ContainsKey(module))
+                byModule[module] = new SortedSet<string>();
+            byModule[module].Add(name);
         }
 
-        if (fromSystem.Count > 0)
-            sb.AppendLine($"from System import {string.Join(", ", fromSystem)}");
-        if (fromTasks.Count > 0)
-            sb.AppendLine($"from System.Threading.Tasks import {string.Join(", ", fromTasks)}");
-        if (fromExpressions.Count > 0)
-            sb.AppendLine($"from System.Linq.Expressions import {string.Join(", ", fromExpressions)}");
-        if (fromCollections.Count > 0)
-            sb.AppendLine($"from System.Collections import {string.Join(", ", fromCollections)}");
-        if (fromGeneric.Count > 0)
-            sb.AppendLine($"from System.Collections.Generic import {string.Join(", ", fromGeneric)}");
+        foreach (var kv in byModule)
+            sb.AppendLine($"from {kv.Key} import {string.Join(", ", kv.Value)}");
 
         foreach (var full in projectImports)
         {
@@ -244,7 +236,11 @@ public static class PythonStubGenerator
         if (sb.Length == beforeMembers && string.IsNullOrWhiteSpace(classDoc))
             sb.AppendLine("    pass");
 
-        return sb.ToString();
+        string generated = sb.ToString();
+        if (Regex.IsMatch(generated, @"\bAny\b") && !typingImports.Contains("Any"))
+            typingImports.Add("Any");
+
+        return generated;
     }
 
     // ========== Импорты ==========
@@ -281,10 +277,16 @@ public static class PythonStubGenerator
         if (usedType == typeof(void) ||
             usedType == typeof(string) || usedType == typeof(int) || usedType == typeof(bool) ||
             usedType == typeof(double) || usedType == typeof(float) || usedType == typeof(decimal) ||
-            usedType == typeof(long) || usedType == typeof(object) || usedType == typeof(byte) ||
+            usedType == typeof(long) || usedType == typeof(byte) ||
             usedType == typeof(short) || usedType == typeof(uint) || usedType == typeof(ulong) ||
             usedType == typeof(char) || usedType == typeof(sbyte))
             return;
+
+        if (usedType == typeof(object))
+        {
+            imports.Add("typing.Any");
+            return;
+        }
 
         if (usedType.IsGenericParameter) return;
 
@@ -351,7 +353,7 @@ public static class PythonStubGenerator
             else if (ns.StartsWith("System.Collections.Generic"))
                 imports.Add($"System.Collections.Generic.{name}");
             else if (ns.StartsWith("System.Collections"))
-                imports.Add($"System.Collections.{name}");
+                imports.Add($"{usedType.Namespace}.{usedType.Name.Split('`')[0]}");
             else
                 imports.Add($"System.{name}");
             return;
