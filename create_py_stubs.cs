@@ -89,45 +89,111 @@ public static class PythonStubGenerator
     {
         if (type == null) return null;
 
+        // IFoo<Bar> → сначала Foo<>, потом Foo<Bar>
+        if (type.IsGenericType && !type.IsGenericTypeDefinition)
+        {
+            Type def = type.GetGenericTypeDefinition();
+            Type resolvedDef = ResolveType(def);
+            if (resolvedDef != null && resolvedDef != def && resolvedDef.IsGenericTypeDefinition)
+            {
+                try
+                {
+                    var args = type.GetGenericArguments().Select(ResolveType).ToArray();
+                    return resolvedDef.MakeGenericType(args);
+                }
+                catch
+                {
+                    return resolvedDef;
+                }
+            }
+            return type;
+        }
+
         if (SubstitutionCache.TryGetValue(type, out var cached))
             return cached;
 
-        Type resolved = type;
-
-        if (type.IsInterface)
-        {
-            string name = type.Name.Split('`')[0];
-            if (name.Length > 1 && name[0] == 'I' && char.IsUpper(name[1]))
-            {
-                string implName = name.Substring(1);
-                string ns = type.Namespace ?? "";
-                Type impl = null;
-
-                foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-                {
-                    if (asm.IsDynamic) continue;
-                    Type[] asmTypes;
-                    try { asmTypes = asm.GetTypes(); }
-                    catch { continue; }
-
-                    impl = asmTypes.FirstOrDefault(t =>
-                        t.IsClass &&
-                        !t.IsAbstract &&
-                        t.IsPublic &&
-                        t.Name.Split('`')[0] == implName &&
-                        (t.Namespace ?? "") == ns &&
-                        type.IsAssignableFrom(t));
-
-                    if (impl != null) break;
-                }
-
-                if (impl != null)
-                    resolved = impl;
-            }
-        }
-
+        Type resolved = FindImplementation(type) ?? type;
         SubstitutionCache[type] = resolved;
         return resolved;
+    }
+
+    private static Type FindImplementation(Type iface)
+    {
+        if (iface == null || !iface.IsInterface)
+            return null;
+
+        string name = iface.Name.Split('`')[0];
+        if (name.Length < 2 || name[0] != 'I' || !char.IsUpper(name[1]))
+            return null;
+
+        string implName = name.Substring(1); // IUnitExpressionBuilder → UnitExpressionBuilder
+        string ns = iface.Namespace ?? "";
+        int arity = iface.IsGenericType ? iface.GetGenericArguments().Length : 0;
+
+        Type sameNs = null;
+        Type anyNs = null;
+
+        foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            if (asm.IsDynamic) continue;
+
+            Type[] types;
+            try { types = asm.GetTypes(); }
+            catch { continue; }
+
+            foreach (var t in types)
+            {
+                if (t == null || !t.IsClass || t.IsAbstract || !t.IsPublic)
+                    continue;
+                if (t.Name.Split('`')[0] != implName)
+                    continue;
+
+                int tArity = t.IsGenericType ? t.GetGenericArguments().Length : 0;
+                if (tArity != arity)
+                    continue;
+
+                if (!ImplementsInterface(t, iface))
+                    continue;
+
+                if ((t.Namespace ?? "") == ns)
+                {
+                    sameNs = t;
+                    break;
+                }
+
+                if (anyNs == null)
+                    anyNs = t;
+            }
+
+            if (sameNs != null)
+                break;
+        }
+
+        return sameNs ?? anyNs;
+    }
+
+    private static bool ImplementsInterface(Type impl, Type iface)
+    {
+        if (iface.IsAssignableFrom(impl))
+            return true;
+
+        Type ifaceDef = iface.IsGenericType ? iface.GetGenericTypeDefinition() : iface;
+
+        Type[] ifaces;
+        try { ifaces = impl.GetInterfaces(); }
+        catch { return false; }
+
+        foreach (var i in ifaces)
+        {
+            if (i == iface)
+                return true;
+            if (i.IsGenericType && i.GetGenericTypeDefinition() == ifaceDef)
+                return true;
+            if (!i.IsGenericType && i == ifaceDef)
+                return true;
+        }
+
+        return false;
     }
 
     // ========== Генерация одного типа ==========
