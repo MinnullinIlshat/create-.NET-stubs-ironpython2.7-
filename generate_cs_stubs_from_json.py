@@ -77,9 +77,10 @@ global using System.Threading.Tasks;
 
 
 def parse_stubs(lines):
-    """Правильный парсер, который сохраняет using и namespace"""
+    """Правильный парсер, который сохраняет using, namespace, XML-документацию и делегаты"""
     stubs = {}
     pending_usings = []
+    pending_docs = []
     current_namespace = ""
     current_type_name = ""
     current_code = []
@@ -90,7 +91,23 @@ def parse_stubs(lines):
     type_pattern = re.compile(
         r'^\s*public\s+(?:abstract\s+|sealed\s+|static\s+)?(class|interface|enum|struct|record)\s+([A-Za-z_][A-Za-z0-9_]*)'
     )
+    delegate_pattern = re.compile(
+        r'^\s*public\s+delegate\s+.+\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[A-Za-z0-9_,\s]+>)?\s*\('
+    )
     using_pattern = re.compile(r'^\s*using\s+([A-Za-z0-9_.]+)\s*;')
+    doc_pattern = re.compile(r'^\s*///')
+
+    def build_header(first_line):
+        """Собирает шапку стаба: using'и, namespace и накопленную документацию"""
+        code = list(pending_usings)
+        if current_namespace:
+            if code:
+                code.append("")
+            code.append(f"namespace {current_namespace};")
+            code.append("")
+        code.extend(pending_docs)
+        code.append(first_line)
+        return code
 
     for line in lines:
         stripped = line.strip()
@@ -108,27 +125,38 @@ def parse_stubs(lines):
                 current_namespace = ns_match.group(1)
                 continue
 
+            # Собираем XML-документацию перед объявлением типа
+            if doc_pattern.match(stripped):
+                pending_docs.append(line)
+                continue
+
+            # Делегаты — однострочные объявления без тела
+            delegate_match = delegate_pattern.match(stripped)
+            if delegate_match:
+                delegate_name = delegate_match.group(1)
+                full_name = f"{current_namespace}.{delegate_name}" if current_namespace else delegate_name
+                stubs[full_name] = '\n'.join(build_header(line))
+                pending_usings = []
+                pending_docs = []
+                current_namespace = ""
+                continue
+
         # Начало типа
         type_match = type_pattern.match(stripped)
         if type_match and not in_type:
             current_type_name = type_match.group(2)
-            current_code = []
-
-            # === Вставляем собранные using и namespace ===
-            current_code.extend(pending_usings)
-            if current_namespace:
-                current_code.append(f"namespace {current_namespace};")
-                current_code.append("")
-
-            current_code.append(line)
+            current_code = build_header(line)
             brace_count = line.count('{') - line.count('}')
             in_type = True
             pending_usings = []  # очищаем
+            pending_docs = []
             continue
 
         if in_type:
             current_code.append(line)
-            brace_count += line.count('{') - line.count('}')
+            # Комментарии (в т.ч. XML-документация) могут содержать скобки — не считаем их
+            if not stripped.startswith("//"):
+                brace_count += line.count('{') - line.count('}')
 
             if brace_count <= 0:
                 full_name = f"{current_namespace}.{current_type_name}" if current_namespace else current_type_name
